@@ -1,9 +1,0 @@
-flask
-flask-cors
-google-genai
-python-dotenv
-PyPDF2
-python-docx
-openai-whisper
-reportlab
-gunicorn
