@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from google import genai
 from PyPDF2 import PdfReader
 from docx import Document
-import whisper
 import tempfile
 from io import BytesIO
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -21,17 +20,7 @@ client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-whisper_model = None
-
-
-def get_whisper_model():
-    """Load Whisper only when an audio endpoint is used."""
-    global whisper_model
-    if whisper_model is None:
-        whisper_model = whisper.load_model(
-            os.getenv("WHISPER_MODEL", "base")
-        )
-    return whisper_model
+GEMINI_MODEL = "gemini-3.5-flash"
 
 
 def extract_text_from_file(uploaded_file):
@@ -39,7 +28,7 @@ def extract_text_from_file(uploaded_file):
     filename = (uploaded_file.filename or "").lower()
 
     if filename.endswith(".txt"):
-        return uploaded_file.read().decode("utf-8")
+        return uploaded_file.read().decode("utf-8", errors="ignore")
 
     if filename.endswith(".pdf"):
         reader = PdfReader(uploaded_file)
@@ -65,8 +54,11 @@ def health():
 @app.route("/analyze", methods=["POST"])
 def analyze():
     try:
-        data = request.json
-        text = data.get("text", "")
+        data = request.json or {}
+        text = data.get("text", "").strip()
+
+        if not text:
+            return jsonify({"error": "Please enter some text."}), 400
 
         prompt = f"""
 Analyze this English text.
@@ -96,15 +88,15 @@ Text:
 """
 
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=GEMINI_MODEL,
             contents=prompt
         )
 
         return jsonify({"result": response.text})
 
     except Exception as e:
-        print("Gemini Error:", e)
-        return jsonify({"result": f"⚠️ Error: {str(e)}"})
+        print("Gemini Error in /analyze:", e)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/extract-text", methods=["POST"])
@@ -116,7 +108,7 @@ def extract_text():
 
     try:
         text = extract_text_from_file(uploaded_file)
-    except ValueError as error:
+    except Exception as error:
         return jsonify({"error": str(error)}), 400
 
     return jsonify({"text": text})
@@ -124,7 +116,9 @@ def extract_text():
 
 @app.route("/transcribe-audio", methods=["POST"])
 def transcribe_audio():
-    audio = request.files["audio"]
+    audio = request.files.get("audio")
+    if not audio:
+        return jsonify({"error": "No audio file provided."}), 400
 
     suffix = os.path.splitext(audio.filename or ".webm")[1] or ".webm"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
@@ -134,22 +128,26 @@ def transcribe_audio():
     try:
         uploaded = client.files.upload(file=temp_path)
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=GEMINI_MODEL,
             contents=[
                 "Transcribe this audio accurately. Return only the transcription text, nothing else.",
                 uploaded
             ]
         )
         text = response.text.strip()
+    except Exception as e:
+        print("Error in transcribe_audio:", e)
+        return jsonify({"error": str(e)}), 500
     finally:
-        os.remove(temp_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
     return jsonify({"text": text})
 
 
 @app.route("/download-pdf", methods=["POST"])
 def download_pdf():
-    data = request.json
+    data = request.json or {}
     analysis = data.get("analysis", "")
 
     pdf_buffer = BytesIO()
@@ -176,45 +174,47 @@ def download_pdf():
 def generate_notes():
     import time
 
-    audio = request.files.get("audio")
-    document = request.files.get("file")
+    try:
+        audio = request.files.get("audio")
+        document = request.files.get("file")
 
-    if audio:
-        source = "audio"
-        # Save audio to a temp file and use Gemini's audio API
-        # This avoids loading Whisper (needs 2GB RAM) on the free tier
-        suffix = os.path.splitext(audio.filename or ".mp3")[1] or ".mp3"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            audio.save(temp_file.name)
-            temp_path = temp_file.name
+        if audio:
+            source = "audio"
+            suffix = os.path.splitext(audio.filename or ".mp3")[1] or ".mp3"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                audio.save(temp_file.name)
+                temp_path = temp_file.name
 
-        try:
-            uploaded = client.files.upload(file=temp_path)
-            transcript_response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[
-                    "Transcribe this audio accurately. Return only the transcription text, nothing else.",
-                    uploaded
-                ]
-            )
-            transcript = transcript_response.text.strip()
-        finally:
-            os.remove(temp_path)
+            try:
+                uploaded = client.files.upload(file=temp_path)
+                transcript_response = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=[
+                        "Transcribe this audio accurately. Return only the transcription text, nothing else.",
+                        uploaded
+                    ]
+                )
+                transcript = transcript_response.text.strip()
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
 
-    elif document:
-        source = "document"
-        try:
-            transcript = extract_text_from_file(document)
-        except ValueError as error:
-            return jsonify({"error": str(error)}), 400
+        elif document:
+            source = "document"
+            try:
+                transcript = extract_text_from_file(document)
+            except Exception as error:
+                return jsonify({"error": str(error)}), 400
 
-    else:
-        return jsonify({
-            "error": "Please upload an audio file, PDF, DOCX, or TXT file."
-        }), 400
+        else:
+            return jsonify({
+                "error": "Please upload an audio file, PDF, DOCX, or TXT file."
+            }), 400
 
+        if not transcript or not transcript.strip():
+            return jsonify({"error": "No text could be extracted from the uploaded file."}), 400
 
-    prompt = f"""
+        prompt = f"""
 Create professional study notes from the transcript below.
 
 Transcript:
@@ -231,33 +231,41 @@ Provide the output in this format:
 Make the notes clear, concise, and useful for studying.
 """
 
-    notes = ""
+        notes = ""
+        last_error = ""
 
-    for attempt in range(3):
-        try:
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt
-            )
-            notes = response.text
-            break
-        except Exception as e:
-            print("Gemini Error:", e)
-            time.sleep(8)
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=prompt
+                )
+                notes = response.text
+                break
+            except Exception as e:
+                print(f"Gemini Error in generate_notes attempt {attempt + 1}:", e)
+                last_error = str(e)
+                time.sleep(2)
 
-    if notes == "":
-        notes = "⚠️ AI service is currently busy or the Gemini quota has been exceeded.\n\nPlease wait a minute and try again."
+        if not notes:
+            return jsonify({
+                "error": f"Failed to generate notes: {last_error or 'AI service busy. Please try again.'}"
+            }), 500
 
-    return jsonify({
-        "transcript": transcript,
-        "notes": notes,
-        "source": source
-    })
+        return jsonify({
+            "transcript": transcript,
+            "notes": notes,
+            "source": source
+        })
+
+    except Exception as e:
+        print("General error in /generate-notes:", e)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/download-notes-pdf", methods=["POST"])
 def download_notes_pdf():
-    data = request.json
+    data = request.json or {}
     transcript = data.get("transcript", "")
     notes = data.get("notes", "")
 
