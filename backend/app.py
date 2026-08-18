@@ -1,12 +1,12 @@
 import os
+import tempfile
+from io import BytesIO
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from google import genai
 from PyPDF2 import PdfReader
 from docx import Document
-import tempfile
-from io import BytesIO
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
@@ -20,7 +20,41 @@ client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY")
 )
 
-GEMINI_MODEL = "gemini-3.5-flash"
+# Supported active models in order of priority
+MODELS_TO_TRY = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash"]
+
+
+def generate_with_fallback(contents):
+    """Generate content with automatic fallback across available Flash models."""
+    last_error = None
+    for model_name in MODELS_TO_TRY:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents
+            )
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            print(f"Model {model_name} failed: {e}")
+            last_error = e
+    raise last_error or RuntimeError("All AI models failed to generate a response.")
+
+
+def get_audio_mime_type(filename_or_ext):
+    """Determine proper audio mime type for Google GenAI files service."""
+    ext = (os.path.splitext(filename_or_ext or "")[1] or "").lower()
+    mapping = {
+        ".mp3": "audio/mp3",
+        ".wav": "audio/wav",
+        ".webm": "audio/webm",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".ogg": "audio/ogg",
+        ".flac": "audio/flac",
+        ".aac": "audio/aac",
+    }
+    return mapping.get(ext, "audio/mp3")
 
 
 def extract_text_from_file(uploaded_file):
@@ -87,12 +121,8 @@ Text:
 {text}
 """
 
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt
-        )
-
-        return jsonify({"result": response.text})
+        result_text = generate_with_fallback(prompt)
+        return jsonify({"result": result_text})
 
     except Exception as e:
         print("Gemini Error in /analyze:", e)
@@ -120,27 +150,35 @@ def transcribe_audio():
     if not audio:
         return jsonify({"error": "No audio file provided."}), 400
 
-    suffix = os.path.splitext(audio.filename or ".webm")[1] or ".webm"
+    orig_filename = audio.filename or "recording.webm"
+    suffix = os.path.splitext(orig_filename)[1] or ".webm"
+    mime_type = get_audio_mime_type(orig_filename)
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
         audio.save(temp_file.name)
         temp_path = temp_file.name
 
+    uploaded_file_ref = None
     try:
-        uploaded = client.files.upload(file=temp_path)
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[
-                "Transcribe this audio accurately. Return only the transcription text, nothing else.",
-                uploaded
-            ]
+        uploaded_file_ref = client.files.upload(
+            file=temp_path,
+            config={"mime_type": mime_type}
         )
-        text = response.text.strip()
+        text = generate_with_fallback([
+            "Transcribe this audio accurately. Return only the transcription text, nothing else.",
+            uploaded_file_ref
+        ]).strip()
     except Exception as e:
         print("Error in transcribe_audio:", e)
         return jsonify({"error": str(e)}), 500
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+        if uploaded_file_ref:
+            try:
+                client.files.delete(name=uploaded_file_ref.name)
+            except Exception:
+                pass
 
     return jsonify({"text": text})
 
@@ -172,32 +210,38 @@ def download_pdf():
 
 @app.route("/generate-notes", methods=["POST"])
 def generate_notes():
-    import time
-
     try:
         audio = request.files.get("audio")
         document = request.files.get("file")
 
         if audio:
             source = "audio"
-            suffix = os.path.splitext(audio.filename or ".mp3")[1] or ".mp3"
+            orig_filename = audio.filename or "audio.mp3"
+            suffix = os.path.splitext(orig_filename)[1] or ".mp3"
+            mime_type = get_audio_mime_type(orig_filename)
+
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 audio.save(temp_file.name)
                 temp_path = temp_file.name
 
+            uploaded_file_ref = None
             try:
-                uploaded = client.files.upload(file=temp_path)
-                transcript_response = client.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=[
-                        "Transcribe this audio accurately. Return only the transcription text, nothing else.",
-                        uploaded
-                    ]
+                uploaded_file_ref = client.files.upload(
+                    file=temp_path,
+                    config={"mime_type": mime_type}
                 )
-                transcript = transcript_response.text.strip()
+                transcript = generate_with_fallback([
+                    "Transcribe this audio accurately. Return only the transcription text, nothing else.",
+                    uploaded_file_ref
+                ]).strip()
             finally:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
+                if uploaded_file_ref:
+                    try:
+                        client.files.delete(name=uploaded_file_ref.name)
+                    except Exception:
+                        pass
 
         elif document:
             source = "document"
@@ -231,26 +275,7 @@ Provide the output in this format:
 Make the notes clear, concise, and useful for studying.
 """
 
-        notes = ""
-        last_error = ""
-
-        for attempt in range(3):
-            try:
-                response = client.models.generate_content(
-                    model=GEMINI_MODEL,
-                    contents=prompt
-                )
-                notes = response.text
-                break
-            except Exception as e:
-                print(f"Gemini Error in generate_notes attempt {attempt + 1}:", e)
-                last_error = str(e)
-                time.sleep(2)
-
-        if not notes:
-            return jsonify({
-                "error": f"Failed to generate notes: {last_error or 'AI service busy. Please try again.'}"
-            }), 500
+        notes = generate_with_fallback(prompt)
 
         return jsonify({
             "transcript": transcript,
