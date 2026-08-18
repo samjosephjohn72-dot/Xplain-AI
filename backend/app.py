@@ -96,7 +96,7 @@ Text:
 """
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash",
             contents=prompt
         )
 
@@ -126,13 +126,25 @@ def extract_text():
 def transcribe_audio():
     audio = request.files["audio"]
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
+    suffix = os.path.splitext(audio.filename or ".webm")[1] or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
         audio.save(temp_file.name)
-        result = get_whisper_model().transcribe(temp_file.name)
+        temp_path = temp_file.name
 
-    os.remove(temp_file.name)
+    try:
+        uploaded = client.files.upload(file=temp_path)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                "Transcribe this audio accurately. Return only the transcription text, nothing else.",
+                uploaded
+            ]
+        )
+        text = response.text.strip()
+    finally:
+        os.remove(temp_path)
 
-    return jsonify({"text": result["text"]})
+    return jsonify({"text": text})
 
 
 @app.route("/download-pdf", methods=["POST"])
@@ -169,12 +181,23 @@ def generate_notes():
 
     if audio:
         source = "audio"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
+        # Save audio to a temp file and use Gemini's audio API
+        # This avoids loading Whisper (needs 2GB RAM) on the free tier
+        suffix = os.path.splitext(audio.filename or ".mp3")[1] or ".mp3"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             audio.save(temp_file.name)
             temp_path = temp_file.name
 
         try:
-            transcript = get_whisper_model().transcribe(temp_path)["text"]
+            uploaded = client.files.upload(file=temp_path)
+            transcript_response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    "Transcribe this audio accurately. Return only the transcription text, nothing else.",
+                    uploaded
+                ]
+            )
+            transcript = transcript_response.text.strip()
         finally:
             os.remove(temp_path)
 
@@ -189,6 +212,7 @@ def generate_notes():
         return jsonify({
             "error": "Please upload an audio file, PDF, DOCX, or TXT file."
         }), 400
+
 
     prompt = f"""
 Create professional study notes from the transcript below.
@@ -212,7 +236,7 @@ Make the notes clear, concise, and useful for studying.
     for attempt in range(3):
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=prompt
             )
             notes = response.text
