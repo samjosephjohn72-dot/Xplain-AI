@@ -15,12 +15,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 load_dotenv()
 
 app = Flask(__name__)
-
-# Fix: pass "*" as a string, not a list — flask-cors treats ["*"] as literal match
-_cors_env = os.getenv("CORS_ORIGINS", "*")
-_cors_origins = "*" if _cors_env.strip() == "*" else [o.strip() for o in _cors_env.split(",")]
-
-CORS(app, resources={r"/*": {"origins": _cors_origins}})
+CORS(app)  # Allow all origins
 
 client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY")
