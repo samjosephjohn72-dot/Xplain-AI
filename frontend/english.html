@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>English Analyzer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="hero">
+
+    <h1>English Analyzer</h1>
+
+    <p>
+        Analyze your English through text, files, audio, or voice recording.
+    </p>
+
+    <div class="analyzer-box">
+
+        <textarea
+            placeholder="Type your English here..."
+            rows="10">
+        </textarea>
+
+        <br><br>
+
+        <label>Upload Text File</label>
+         <br>
+         <input
+           type="file"
+           id="textFile"
+           accept=".txt,.pdf,.docx"
+           onchange="loadDocument()">
+
+        <br><br>
+
+        <label>Upload Audio File</label>
+<br>
+
+<input
+    type="file"
+    id="audioFile"
+    accept=".mp3,.wav,.m4a"
+    onchange="uploadAudio()">
+
+        <br><br>
+
+        <button
+    id="recordBtn"
+    onclick="toggleRecording()">
+
+    🎤 Start Recording
+
+</button>
+
+        <br><br>
+
+        <button
+    id="analyzeBtn"
+    onclick="analyzeText()">
+    Analyze English
+</button>
+<div id="loadingSpinner" class="spinner-container">
+
+    <div class="spinner"></div>
+
+    <p>Analyzing...</p>
+
+</div>
+
+<br><br>
+
+<div id="resultBox" class="result-box">
+
+    <h2>Analysis Results</h2>
+
+    <button onclick="downloadPDF()">
+        📄 Download Report
+    </button>
+
+    <br><br>
+
+    <div id="resultContent">
+        Results will appear here...
+    </div>
+
+</div>
+
+<script src="config.js"></script>
+<script src="script.js"></script>
+
+    </div>
+
+</div>
+
+</body>
+</html>

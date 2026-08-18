@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Notes Generator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="hero">
+
+    <h1>AI Notes Generator</h1>
+
+    <p>
+        Upload audio and generate smart notes.
+    </p>
+
+    <div class="analyzer-box">
+
+        <label>Upload Audio or Document</label>
+
+        <br><br>
+
+        <input
+            type="file"
+            id="notesInput"
+            accept=".mp3,.wav,.m4a,.pdf,.docx,.txt">
+
+        <br><br>
+
+        <button onclick="generateNotes()">
+            Generate Notes
+        </button>
+
+    </div>
+
+    <div class="result-box">
+
+        <h2>Generated Notes</h2>
+        <br>
+
+            <button onclick="downloadNotesPDF()">
+               📄 Download Notes PDF
+            </button>
+
+        <div id="notesResult">
+
+            Notes will appear here...
+
+        </div>
+
+    </div>
+
+</div>
+
+<script src="config.js"></script>
+<script src="script.js"></script>
+
+</body>
+</html>
