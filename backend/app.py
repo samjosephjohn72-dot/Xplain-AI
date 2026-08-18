@@ -1,5 +1,5 @@
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from google import genai
@@ -8,53 +8,35 @@ from docx import Document
 import whisper
 import tempfile
 from io import BytesIO
-from flask import send_file
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer
-)
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(
-    app,
-    resources={
-        r"/*": {
-            "origins": os.getenv("CORS_ORIGINS", "*").split(",")
-        }
-    }
-)
+
+# Fix: pass "*" as a string, not a list — flask-cors treats ["*"] as literal match
+_cors_env = os.getenv("CORS_ORIGINS", "*")
+_cors_origins = "*" if _cors_env.strip() == "*" else [o.strip() for o in _cors_env.split(",")]
+
+CORS(app, resources={r"/*": {"origins": _cors_origins}})
 
 client = genai.Client(
     api_key=os.getenv("GEMINI_API_KEY")
 )
+
 whisper_model = None
 
 
 def get_whisper_model():
     """Load Whisper only when an audio endpoint is used."""
     global whisper_model
-
     if whisper_model is None:
         whisper_model = whisper.load_model(
             os.getenv("WHISPER_MODEL", "base")
         )
-
     return whisper_model
-
-
-@app.route("/")
-def home():
-    return "novaXplain Backend Running"
-
-
-@app.route("/health")
-def health():
-    return jsonify({"status": "ok"})
 
 
 def extract_text_from_file(uploaded_file):
@@ -74,11 +56,20 @@ def extract_text_from_file(uploaded_file):
 
     raise ValueError("Unsupported file type. Upload a PDF, DOCX, or TXT file.")
 
+
+@app.route("/")
+def home():
+    return "novaXplain Backend Running"
+
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
+
+
 @app.route("/analyze", methods=["POST"])
 def analyze():
-
     try:
-
         data = request.json
         text = data.get("text", "")
 
@@ -114,17 +105,13 @@ Text:
             contents=prompt
         )
 
-        return jsonify({
-            "result": response.text
-        })
+        return jsonify({"result": response.text})
 
     except Exception as e:
-
         print("Gemini Error:", e)
+        return jsonify({"result": f"⚠️ Error: {str(e)}"})
 
-        return jsonify({
-            "result": "⚠️ The AI service is currently busy. Please try again in a few moments."
-        })
+
 @app.route("/extract-text", methods=["POST"])
 def extract_text():
     uploaded_file = request.files.get("file")
@@ -137,63 +124,37 @@ def extract_text():
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
-    return jsonify({
-        "text": text
-    })
+    return jsonify({"text": text})
+
+
 @app.route("/transcribe-audio", methods=["POST"])
 def transcribe_audio():
-
     audio = request.files["audio"]
 
-    with tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=".webm"
-    ) as temp_file:
-
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as temp_file:
         audio.save(temp_file.name)
-
-        result = get_whisper_model().transcribe(
-            temp_file.name
-        )
+        result = get_whisper_model().transcribe(temp_file.name)
 
     os.remove(temp_file.name)
 
-    return jsonify({
-        "text": result["text"]
-    })
+    return jsonify({"text": result["text"]})
+
+
 @app.route("/download-pdf", methods=["POST"])
 def download_pdf():
-
     data = request.json
-
     analysis = data.get("analysis", "")
 
     pdf_buffer = BytesIO()
-
     doc = SimpleDocTemplate(pdf_buffer)
-
     styles = getSampleStyleSheet()
-
     content = []
 
-    content.append(
-        Paragraph(
-            "novaXplain English Analysis Report",
-            styles["Title"]
-        )
-    )
-
-    content.append(Spacer(1,12))
-
-    content.append(
-        Paragraph(
-            analysis.replace("\n","<br/>"),
-            styles["BodyText"]
-        )
-    )
+    content.append(Paragraph("novaXplain English Analysis Report", styles["Title"]))
+    content.append(Spacer(1, 12))
+    content.append(Paragraph(analysis.replace("\n", "<br/>"), styles["BodyText"]))
 
     doc.build(content)
-
     pdf_buffer.seek(0)
 
     return send_file(
@@ -202,9 +163,10 @@ def download_pdf():
         download_name="novaXplain_Report.pdf",
         mimetype="application/pdf"
     )
+
+
 @app.route("/generate-notes", methods=["POST"])
 def generate_notes():
-
     import time
 
     audio = request.files.get("audio")
@@ -212,11 +174,7 @@ def generate_notes():
 
     if audio:
         source = "audio"
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".mp3"
-        ) as temp_file:
-
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_file:
             audio.save(temp_file.name)
             temp_path = temp_file.name
 
@@ -257,93 +215,47 @@ Make the notes clear, concise, and useful for studying.
     notes = ""
 
     for attempt in range(3):
-
         try:
-
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=prompt
             )
-
             notes = response.text
             break
-
         except Exception as e:
-
             print("Gemini Error:", e)
-
             time.sleep(8)
 
     if notes == "":
-
-        notes = """
-⚠️ AI service is currently busy or the Gemini quota has been exceeded.
-
-Please wait a minute and try again.
-"""
+        notes = "⚠️ AI service is currently busy or the Gemini quota has been exceeded.\n\nPlease wait a minute and try again."
 
     return jsonify({
         "transcript": transcript,
         "notes": notes,
         "source": source
     })
+
+
 @app.route("/download-notes-pdf", methods=["POST"])
 def download_notes_pdf():
-
     data = request.json
-
     transcript = data.get("transcript", "")
     notes = data.get("notes", "")
 
     pdf_buffer = BytesIO()
-
     doc = SimpleDocTemplate(pdf_buffer)
-
     styles = getSampleStyleSheet()
-
     content = []
 
-    content.append(
-        Paragraph(
-            "novaXplain Notes Report",
-            styles["Title"]
-        )
-    )
-
+    content.append(Paragraph("novaXplain Notes Report", styles["Title"]))
     content.append(Spacer(1, 12))
-
-    content.append(
-        Paragraph(
-            "<b>Transcript</b>",
-            styles["Heading2"]
-        )
-    )
-
-    content.append(
-        Paragraph(
-            transcript,
-            styles["BodyText"]
-        )
-    )
-
+    content.append(Paragraph("<b>Transcript</b>", styles["Heading2"]))
+    content.append(Paragraph(transcript, styles["BodyText"]))
     content.append(Spacer(1, 12))
-
-    content.append(
-        Paragraph(
-            "<b>Generated Notes</b>",
-            styles["Heading2"]
-        )
-    )
-
-    content.append(
-        Paragraph(
-            notes.replace("\n", "<br/>"),
-            styles["BodyText"]
-        )
-    )
+    content.append(Paragraph("<b>Generated Notes</b>", styles["Heading2"]))
+    content.append(Paragraph(notes.replace("\n", "<br/>"), styles["BodyText"]))
 
     doc.build(content)
-
     pdf_buffer.seek(0)
 
     return send_file(
@@ -352,5 +264,7 @@ def download_notes_pdf():
         download_name="novaXplain_Notes.pdf",
         mimetype="application/pdf"
     )
+
+
 if __name__ == "__main__":
     app.run(debug=True)
